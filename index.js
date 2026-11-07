@@ -14,7 +14,7 @@
  * Every optional service (webServer, pluginManager, agents, jobs) is looked up
  * through `ctx.get`, so the plugin still loads in a minimal profile.
  *
- * @module @local/dsh-auto-update
+ * @module dsh-auto-update
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -594,7 +594,7 @@ function start(ctx, config) {
       const file = paths.log
       return { ok: true, path: paths.state, log: existsSync(file) ? readFileSync(file, 'utf8').split(/\r?\n/u).slice(-80) : [] }
     },
-  })
+  }, log)
 
   log('plugin-ready', {
     home,
@@ -615,14 +615,34 @@ function start(ctx, config) {
  * @param {(body: any) => any} settings
  * @param {() => any} log
  */
-function installRoute(ctx, handlers) {
-  const server = ctx.get('webServer')
-  if (server === undefined || server === null) return
-  ctx.effect(() => server.register({
-    kind: 'prefix',
-    path: ROUTE_PREFIX,
-    handler: (request, response) => handleRequest(request, response, handlers),
-  }))
+function installRoute(ctx, handlers, log) {
+  // `webServer` is not guaranteed to exist while the plugin is activated: on a
+  // cold start the web runtime can mount after this row, and a route registered
+  // on `undefined` silently never happens (the settings page then reads HTTP
+  // 405 from the SPA fallback). Register when the service appears instead of
+  // only checking once.
+  try {
+    ctx.inject(['webServer'], (webCtx) => {
+      webCtx.effect(() => {
+        const dispose = webCtx.webServer.register({
+          kind: 'prefix',
+          path: ROUTE_PREFIX,
+          handler: (request, response) => handleRequest(request, response, handlers),
+        })
+        log?.('route-registered', { path: ROUTE_PREFIX })
+        return dispose
+      })
+    })
+  } catch (error) {
+    log?.('route-registration-failed', { message: errorMessage(error) })
+    const server = ctx.get('webServer')
+    if (server === undefined || server === null) return
+    ctx.effect(() => server.register({
+      kind: 'prefix',
+      path: ROUTE_PREFIX,
+      handler: (request, response) => handleRequest(request, response, handlers),
+    }))
+  }
 }
 
 /**
